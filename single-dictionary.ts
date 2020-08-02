@@ -8,10 +8,6 @@ export class SingleDictionary {
     this.dictionary = Dictionary.createEmpty();
   }
 
-  retrieve(tokens: Token[]): number {
-    return this.dictionary.retrieve(tokens, null);
-  }
-
   enumerate(): Array<[Token[], number]> {
     return this.dictionary.enumerate().map(([[key], value]) => [key as Token[], value]);
   }

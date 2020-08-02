@@ -1,6 +1,7 @@
 import {Model} from "./model.ts";
 import {Token, Tokenizer, Normalizer, getPreprocessor} from "./preprocessor.ts";
 import {StringAlignment, splitOnCondition} from "./alignments.ts";
+import {zip} from "./functional.ts";
 
 export interface ApplyOptions {
   tokenizer: Tokenizer,
@@ -9,25 +10,21 @@ export interface ApplyOptions {
 }
 
 type Steps = Array<Array<[number, number]>>;
+type Gains = number[][];
 type Route = Array<[number, number]>;
 
-export function apply(source: string, target: string, options: ApplyOptions): StringAlignment {
+export function apply(source: string, target: string, options: ApplyOptions): [StringAlignment, number] {
   const preprocessor = getPreprocessor(options.tokenizer, options.normalizer);
   return applyTokenized(preprocessor(source), preprocessor(target), options.model);
 }
 
-function computeGainDelta(sourceSequence: Token[], targetSequence: Token[], model: Model): number {
-  const source = model.dictionary.retrieve(sourceSequence, null);
-  const correspondence = model.dictionary.retrieve(sourceSequence, targetSequence);
-  return Math.min(source, correspondence) <= 1
-    ? 0
-    : (sourceSequence.length + targetSequence.length) * (correspondence - 1) / (source - 1);
-  // 1 is being subtracted to eliminate selection bias
+function computeWeight(sourceSequence: Token[], targetSequence: Token[], model: Model): number {
+  return (sourceSequence.length + targetSequence.length) * model.dictionary.retrieve(sourceSequence, targetSequence);
 }
 
-function computeStepsAndGainEntry(source: Token[], target: Token[], model: Model,
-                                  sourceIndex: number, targetIndex: number,
-                                  gains: number[][]): [[number, number], number] {
+function computeStepsAndGainsEntry(source: Token[], target: Token[], model: Model,
+                                   sourceIndex: number, targetIndex: number,
+                                   gains: number[][]): [[number, number], number] {
   if (sourceIndex === 0 || targetIndex === 0) {
     return [[sourceIndex, targetIndex], 0];
   } else {
@@ -37,7 +34,7 @@ function computeStepsAndGainEntry(source: Token[], target: Token[], model: Model
     let currentGain = Math.max(noSourceGain, noTargetGain);
     for (let sourceLength = 1; sourceLength <= sourceIndex; sourceLength++) {
       for (let targetLength = 1; targetLength <= targetIndex; targetLength++) {
-        const possibleGain = computeGainDelta(
+        const possibleGain = computeWeight(
           source.slice(sourceIndex - sourceLength, sourceIndex),
           target.slice(targetIndex - targetLength, targetIndex),
           model
@@ -52,23 +49,23 @@ function computeStepsAndGainEntry(source: Token[], target: Token[], model: Model
   }
 }
 
-function computeSteps(source: Token[], target: Token[], model: Model): Steps {
+function computeStepsAndGains(source: Token[], target: Token[], model: Model): [Steps, Gains] {
   const steps: Steps = [];
-  const gains: number[][] = [];
+  const gains: Gains = [];
   for (let sourceIndex = 0; sourceIndex <= source.length; sourceIndex++) {
     const currentStepsRow: Array<[number, number]> = [];
     const currentGainsRow: number[] = [];
     steps.push(currentStepsRow);
     gains.push(currentGainsRow);
     for (let targetIndex = 0; targetIndex <= target.length; targetIndex++) {
-      const [currentSteps, currentGain] = computeStepsAndGainEntry(
+      const [currentSteps, currentGain] = computeStepsAndGainsEntry(
         source, target, model, sourceIndex, targetIndex, gains
       );
       currentStepsRow.push(currentSteps);
       currentGainsRow.push(currentGain);
     }
   }
-  return steps;
+  return [steps, gains];
 }
 
 function selectPreRoute(source: Token[], target: Token[], steps: Steps): Route {
@@ -114,11 +111,11 @@ function restoreAlignment(source: Token[], target: Token[], route: Route): Strin
   const sides = [source, target].map(
     (side, index) => restoreAlignmentSide(side, route.map((step) => step[index]))
   );
-  return sides[0].map((source, index) => [source, sides[1][index]]);
+  return zip(sides as [Token[][], Token[][]]);
 }
 
-export function applyTokenized(source: Token[], target: Token[], model: Model): StringAlignment {
-  const steps = computeSteps(source, target, model);
+export function applyTokenized(source: Token[], target: Token[], model: Model): [StringAlignment, number] {
+  const [steps, gains] = computeStepsAndGains(source, target, model);
   const route = selectRoute(source, target, steps);
-  return restoreAlignment(source, target, route);
+  return [restoreAlignment(source, target, route), gains[source.length][target.length]];
 }
